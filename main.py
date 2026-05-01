@@ -1,11 +1,30 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import pandas as pd
 import os
 import re
+import json
+import unicodedata
 from pathlib import Path
 
 app = FastAPI(title="Famiflora Stock API")
+
+
+def clean_text(value) -> str:
+    """Nettoie et normalise le texte pour éviter les problèmes d'encodage."""
+    if pd.isna(value):
+        return ""
+    text = str(value)
+    # Normaliser en NFC pour corriger les caractères mal encodés
+    return unicodedata.normalize("NFC", text)
+
+
+def json_response(data: dict):
+    """Retourne une réponse JSON avec encodage UTF-8 garanti."""
+    return Response(
+        content=json.dumps(data, ensure_ascii=False),
+        media_type="application/json; charset=utf-8",
+    )
 
 EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data", "Test Db Bougies.xlsx")
 
@@ -55,8 +74,9 @@ def load_data() -> pd.DataFrame:
         engine="openpyxl",
     )
     df.columns = ["marque", "description", "stock", "prix_vente"]
-    # Nettoyer les lignes vides
-    df = df.dropna(subset=["description"])
+    df["marque"] = df["marque"].apply(clean_text)
+    df["description"] = df["description"].apply(clean_text)
+    df = df[df["description"].str.strip() != ""]
     df["stock"] = pd.to_numeric(df["stock"], errors="coerce").fillna(0).astype(int)
     df["prix_vente"] = pd.to_numeric(df["prix_vente"], errors="coerce")
     return df
@@ -79,36 +99,45 @@ def search_products(
     try:
         df = load_data()
     except DataSourceError as exc:
-        return JSONResponse(content={"found": False, "message": str(exc)}, status_code=503)
+        return json_response({"found": False, "message": str(exc)})
 
-    pattern = re.escape(q.strip())
-    mask = (
-        df["description"].str.contains(pattern, case=False, na=False)
-        | df["marque"].str.contains(pattern, case=False, na=False)
-    )
+    # Recherche mot par mot pour plus de tolérance
+    terms = [re.escape(t) for t in q.strip().split() if t]
+    mask = pd.Series([True] * len(df), index=df.index)
+    for term in terms:
+        mask &= (
+            df["description"].str.contains(term, case=False, na=False)
+            | df["marque"].str.contains(term, case=False, na=False)
+        )
     results = df[mask]
+
+    # Si 0 résultat avec tous les mots, essayer avec le premier mot seul
+    if results.empty and terms:
+        fallback = re.escape(q.strip().split()[0])
+        mask2 = (
+            df["description"].str.contains(fallback, case=False, na=False)
+            | df["marque"].str.contains(fallback, case=False, na=False)
+        )
+        results = df[mask2]
 
     if en_stock_seulement:
         results = results[results["stock"] > 0]
 
     if results.empty:
-        return JSONResponse(
-            content={"found": False, "message": f"Aucun article trouvé pour '{q}'."},
-            status_code=200,
-        )
+        return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
 
     items = []
-    for _, row in results.iterrows():
+    for _, row in results.head(10).iterrows():
         prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
         stock_label = str(int(row["stock"])) if row["stock"] > 0 else "Rupture de stock"
         items.append({
-            "marque": str(row["marque"]) if pd.notna(row["marque"]) else "",
-            "description": str(row["description"]),
+            "marque": row["marque"],
+            "description": row["description"],
             "stock": stock_label,
             "prix_vente": prix,
         })
 
-    return {"found": True, "count": len(items), "produits": items}
+    return json_response({"found": True, "count": len(items), "produits": items})
 
 
 @app.get("/stock/{description}")
@@ -119,24 +148,25 @@ def get_stock(description: str):
     try:
         df = load_data()
     except DataSourceError as exc:
-        return JSONResponse(content={"found": False, "message": str(exc)}, status_code=503)
-    pattern = re.escape(description.strip())
-    mask = df["description"].str.contains(pattern, case=False, na=False)
+        return json_response({"found": False, "message": str(exc)})
+
+    # Recherche mot par mot
+    terms = [re.escape(t) for t in description.strip().split() if t]
+    mask = pd.Series([True] * len(df), index=df.index)
+    for term in terms:
+        mask &= df["description"].str.contains(term, case=False, na=False)
     results = df[mask]
 
     if results.empty:
-        return JSONResponse(
-            content={"found": False, "message": f"Article '{description}' introuvable."},
-            status_code=200,
-        )
+        return json_response({"found": False, "message": f"Article '{description}' introuvable."})
 
     row = results.iloc[0]
     prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
-    return {
+    return json_response({
         "found": True,
-        "marque": str(row["marque"]) if pd.notna(row["marque"]) else "",
-        "description": str(row["description"]),
+        "marque": row["marque"],
+        "description": row["description"],
         "stock": int(row["stock"]),
         "en_stock": row["stock"] > 0,
         "prix_vente": prix,
-    }
+    })
