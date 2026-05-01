@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 import pandas as pd
 import os
 import re
+from pathlib import Path
 
 app = FastAPI(title="Famiflora Stock API")
 
@@ -12,14 +13,43 @@ EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data", "Test Db Bougies.xl
 class DataSourceError(Exception):
     pass
 
+
+def resolve_excel_path() -> str:
+    file_name = "Test Db Bougies.xlsx"
+    base_dir = Path(__file__).resolve().parent
+    cwd_dir = Path.cwd()
+
+    candidates = [
+        base_dir / "data" / file_name,
+        base_dir / file_name,
+        cwd_dir / "data" / file_name,
+        cwd_dir / file_name,
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    # Fallback: rechercher le fichier dans le projet en cas de root dir Railway différent
+    for found in base_dir.rglob(file_name):
+        if found.is_file():
+            return str(found)
+
+    for found in cwd_dir.rglob(file_name):
+        if found.is_file():
+            return str(found)
+
+    checked = ", ".join(str(path) for path in candidates)
+    raise DataSourceError(
+        "Fichier Excel introuvable. Placez 'Test Db Bougies.xlsx' dans le dossier data/. "
+        f"Chemins testés: {checked}"
+    )
+
 def load_data() -> pd.DataFrame:
-    if not os.path.exists(EXCEL_PATH):
-        raise DataSourceError(
-            "Fichier Excel introuvable. Placez 'Test Db Bougies.xlsx' dans le dossier data/."
-        )
+    excel_path = resolve_excel_path()
 
     df = pd.read_excel(
-        EXCEL_PATH,
+        excel_path,
         usecols="B,E,K,AG",
         header=0,
         engine="openpyxl",
