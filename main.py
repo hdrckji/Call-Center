@@ -8,7 +8,16 @@ app = FastAPI(title="Famiflora Stock API")
 
 EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data", "Test Db Bougies.xlsx")
 
+
+class DataSourceError(Exception):
+    pass
+
 def load_data() -> pd.DataFrame:
+    if not os.path.exists(EXCEL_PATH):
+        raise DataSourceError(
+            "Fichier Excel introuvable. Placez 'Test Db Bougies.xlsx' dans le dossier data/."
+        )
+
     df = pd.read_excel(
         EXCEL_PATH,
         usecols="B,E,K,AG",
@@ -37,7 +46,10 @@ def search_products(
     Recherche un produit par mot-clé dans la description ou la marque.
     Utilisé par l'agent ElevenLabs pour répondre aux questions clients.
     """
-    df = load_data()
+    try:
+        df = load_data()
+    except DataSourceError as exc:
+        return JSONResponse(content={"found": False, "message": str(exc)}, status_code=503)
 
     pattern = re.escape(q.strip())
     mask = (
@@ -74,7 +86,10 @@ def get_stock(description: str):
     """
     Retourne le stock et le prix d'un article précis (correspondance exacte ou proche).
     """
-    df = load_data()
+    try:
+        df = load_data()
+    except DataSourceError as exc:
+        return JSONResponse(content={"found": False, "message": str(exc)}, status_code=503)
     pattern = re.escape(description.strip())
     mask = df["description"].str.contains(pattern, case=False, na=False)
     results = df[mask]
