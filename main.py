@@ -100,6 +100,7 @@ def health():
 def search_products(
     q: str = Query(..., description="Terme de recherche (nom, marque, description)"),
     en_stock_seulement: bool = Query(False, description="Filtrer uniquement les articles en stock"),
+    limit: int = Query(1, ge=1, le=10, description="Nombre max de resultats retournes"),
 ):
     """
     Recherche un produit par mot-clé dans la description ou la marque.
@@ -110,7 +111,7 @@ def search_products(
     except DataSourceError as exc:
         return json_response({"found": False, "message": str(exc)})
 
-    # Recherche mot par mot pour plus de tolérance
+    # Recherche mot par mot en mode strict pour eviter les faux positifs.
     terms = [re.escape(t) for t in q.strip().split() if t]
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
@@ -120,15 +121,6 @@ def search_products(
         )
     results = df[mask]
 
-    # Si 0 résultat avec tous les mots, essayer avec le premier mot seul
-    if results.empty and terms:
-        fallback = re.escape(q.strip().split()[0])
-        mask2 = (
-            df["description"].str.contains(fallback, case=False, na=False)
-            | df["marque"].str.contains(fallback, case=False, na=False)
-        )
-        results = df[mask2]
-
     if en_stock_seulement:
         results = results[results["stock"] > 4]
 
@@ -136,7 +128,7 @@ def search_products(
         return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
 
     items = []
-    for _, row in results.head(10).iterrows():
+    for _, row in results.head(limit).iterrows():
         prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
         stock_label = stock_status(int(row["stock"]))
         items.append({
