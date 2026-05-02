@@ -35,6 +35,50 @@ def stock_status(stock_value: int) -> str:
         return "Stock tres limite"
     return "Pas en stock"
 
+
+ALIASES = {
+    "alia": "alya",
+    "alyah": "alya",
+    "bolsus": "bolsius",
+    "bonsus": "bolsius",
+    "golsus": "bolsius",
+}
+
+NOISE_TOKENS = {
+    "sans",
+    "terminer",
+    "encore",
+    "avoir",
+    "avec",
+    "pour",
+    "svp",
+}
+
+
+def normalize_for_search(value: str) -> str:
+    text = clean_text(value).lower()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_token(token: str) -> str:
+    token = ALIASES.get(token, token)
+    if token.endswith("s") and len(token) > 4:
+        token = token[:-1]
+    return token
+
+
+def tokenize_query(query: str) -> list[str]:
+    base_tokens = normalize_for_search(query).split()
+    normalized = []
+    for token in base_tokens:
+        token = normalize_token(token)
+        if token and token not in NOISE_TOKENS:
+            normalized.append(token)
+    return normalized
+
 EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data", "Test Db Bougies.xlsx")
 
 
@@ -85,6 +129,7 @@ def load_data() -> pd.DataFrame:
     df.columns = ["marque", "description", "stock", "prix_vente"]
     df["marque"] = df["marque"].apply(clean_text)
     df["description"] = df["description"].apply(clean_text)
+    df["search_text"] = (df["marque"] + " " + df["description"]).apply(normalize_for_search)
     df = df[df["description"].str.strip() != ""]
     df["stock"] = pd.to_numeric(df["stock"], errors="coerce").fillna(0).astype(int)
     df["prix_vente"] = pd.to_numeric(df["prix_vente"], errors="coerce")
@@ -111,15 +156,23 @@ def search_products(
     except DataSourceError as exc:
         return json_response({"found": False, "message": str(exc)})
 
-    # Recherche mot par mot en mode strict pour eviter les faux positifs.
-    terms = [re.escape(t) for t in q.strip().split() if t]
+    # Recherche mot par mot normalisee (accents, pluriels, aliases de marques).
+    terms = tokenize_query(q)
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
-        mask &= (
-            df["description"].str.contains(term, case=False, na=False)
-            | df["marque"].str.contains(term, case=False, na=False)
-        )
+        escaped = re.escape(term)
+        mask &= df["search_text"].str.contains(escaped, case=False, na=False)
     results = df[mask]
+
+    # Fallback: si la transcription contient du bruit, garder les lignes avec le plus de tokens reconnus.
+    if results.empty and terms:
+        score = pd.Series(0, index=df.index)
+        for term in terms:
+            escaped = re.escape(term)
+            score += df["search_text"].str.contains(escaped, case=False, na=False).astype(int)
+        best_score = int(score.max())
+        if best_score > 0:
+            results = df[score == best_score]
 
     if en_stock_seulement:
         results = results[results["stock"] > 4]
@@ -160,14 +213,12 @@ def get_stock(description: str):
     except DataSourceError as exc:
         return json_response({"found": False, "message": str(exc)})
 
-    # Recherche mot par mot
-    terms = [re.escape(t) for t in description.strip().split() if t]
+    # Recherche mot par mot normalisee
+    terms = tokenize_query(description)
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
-        mask &= (
-            df["description"].str.contains(term, case=False, na=False)
-            | df["marque"].str.contains(term, case=False, na=False)
-        )
+        escaped = re.escape(term)
+        mask &= df["search_text"].str.contains(escaped, case=False, na=False)
     results = df[mask]
 
     if results.empty:
