@@ -52,6 +52,22 @@ NOISE_TOKENS = {
     "avoir",
     "avec",
     "pour",
+    "ou",
+    "et",
+    "or",
+    "and",
+    "marque",
+    "article",
+    "produit",
+    "bougie",
+    "diffuseur",
+    "diffuseurs",
+    "de",
+    "des",
+    "du",
+    "la",
+    "le",
+    "les",
     "svp",
 }
 
@@ -180,27 +196,42 @@ def search_products(
     vocabulary = extract_search_vocabulary(df)
     # Recherche mot par mot normalisee (accents, pluriels, aliases et fuzzy matching).
     terms = tokenize_query(q, vocabulary)
-    mask = pd.Series([True] * len(df), index=df.index)
+    if not terms:
+        return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
+
+    term_hits = pd.DataFrame(index=df.index)
     for term in terms:
         escaped = re.escape(term)
-        mask &= df["search_text"].str.contains(escaped, case=False, na=False)
-    results = df[mask]
+        term_hits[term] = df["search_text"].str.contains(escaped, case=False, na=False)
 
-    # Fallback: si la transcription contient du bruit, garder les lignes avec le plus de tokens reconnus.
-    if results.empty and terms:
-        score = pd.Series(0, index=df.index)
-        for term in terms:
-            escaped = re.escape(term)
-            score += df["search_text"].str.contains(escaped, case=False, na=False).astype(int)
-        best_score = int(score.max())
+    # Tentative 1: tous les termes doivent matcher.
+    all_match_mask = term_hits.all(axis=1)
+    results = df[all_match_mask].copy()
+
+    # Fallback: garder les lignes avec le plus grand nombre de termes reconnus.
+    if results.empty:
+        matched_terms = term_hits.sum(axis=1)
+        best_score = int(matched_terms.max())
         if best_score > 0:
-            results = df[score == best_score]
+            results = df[matched_terms == best_score].copy()
+            results["_match_score"] = matched_terms[matched_terms == best_score]
+        else:
+            results = df.iloc[0:0].copy()
+    else:
+        results["_match_score"] = len(terms)
 
     if en_stock_seulement:
-        results = results[results["stock"] > 4]
+        results = results[results["stock"] > 4].copy()
 
     if results.empty:
         return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
+
+    # Tri deterministe: meilleure pertinence puis meilleur statut de stock.
+    results["_stock_rank"] = results["stock"].apply(lambda v: 2 if v > 10 else (1 if v > 4 else 0))
+    results = results.sort_values(
+        by=["_match_score", "_stock_rank", "marque", "description"],
+        ascending=[False, False, True, True],
+    )
 
     total_matches = int(len(results))
 
