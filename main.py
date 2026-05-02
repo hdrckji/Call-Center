@@ -26,6 +26,15 @@ def json_response(data: dict):
         media_type="application/json; charset=utf-8",
     )
 
+
+def stock_status(stock_value: int) -> str:
+    """Mappe le stock numérique vers un statut métier lisible par le client."""
+    if stock_value > 10:
+        return "En stock"
+    if stock_value > 4:
+        return "Stock tres limite"
+    return "Pas en stock"
+
 EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data", "Test Db Bougies.xlsx")
 
 
@@ -121,7 +130,7 @@ def search_products(
         results = df[mask2]
 
     if en_stock_seulement:
-        results = results[results["stock"] > 0]
+        results = results[results["stock"] > 4]
 
     if results.empty:
         return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
@@ -129,12 +138,14 @@ def search_products(
     items = []
     for _, row in results.head(10).iterrows():
         prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
-        stock_label = str(int(row["stock"])) if row["stock"] > 0 else "Rupture de stock"
+        stock_label = stock_status(int(row["stock"]))
         items.append({
             "marque": row["marque"],
             "description": row["description"],
             "stock": stock_label,
             "prix_vente": prix,
+            "reservation_par_telephone": False,
+            "reservation_message": "Il n'est pas possible de reserver un article par telephone.",
         })
 
     return json_response({"found": True, "count": len(items), "produits": items})
@@ -162,11 +173,15 @@ def get_stock(description: str):
 
     row = results.iloc[0]
     prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
+    stock_value = int(row["stock"])
+    stock_label = stock_status(stock_value)
     return json_response({
         "found": True,
         "marque": row["marque"],
         "description": row["description"],
-        "stock": int(row["stock"]),
-        "en_stock": row["stock"] > 0,
+        "stock": stock_label,
+        "en_stock": stock_value > 4,
         "prix_vente": prix,
+        "reservation_par_telephone": False,
+        "reservation_message": "Il n'est pas possible de reserver un article par telephone.",
     })
