@@ -127,6 +127,8 @@ def search_products(
     if results.empty:
         return json_response({"found": False, "message": f"Aucun article trouvé pour '{q}'."})
 
+    total_matches = int(len(results))
+
     items = []
     for _, row in results.head(limit).iterrows():
         prix = f"{row['prix_vente']:.2f} €" if pd.notna(row["prix_vente"]) else "Prix non disponible"
@@ -140,7 +142,12 @@ def search_products(
             "reservation_message": "Il n'est pas possible de reserver un article par telephone.",
         })
 
-    return json_response({"found": True, "count": len(items), "produits": items})
+    return json_response({
+        "found": True,
+        "count": total_matches,
+        "returned_count": len(items),
+        "produits": items,
+    })
 
 
 @app.get("/stock/{description}")
