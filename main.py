@@ -165,7 +165,10 @@ def get_stock(description: str):
     terms = [re.escape(t) for t in description.strip().split() if t]
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
-        mask &= df["description"].str.contains(term, case=False, na=False)
+        mask &= (
+            df["description"].str.contains(term, case=False, na=False)
+            | df["marque"].str.contains(term, case=False, na=False)
+        )
     results = df[mask]
 
     if results.empty:
