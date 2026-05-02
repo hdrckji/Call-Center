@@ -6,6 +6,7 @@ import re
 import json
 import unicodedata
 from pathlib import Path
+from difflib import get_close_matches
 
 app = FastAPI(title="Famiflora Stock API")
 
@@ -70,11 +71,31 @@ def normalize_token(token: str) -> str:
     return token
 
 
-def tokenize_query(query: str) -> list[str]:
+def extract_search_vocabulary(df: pd.DataFrame) -> set[str]:
+    vocab = set()
+    for text in df["search_text"].dropna():
+        for token in str(text).split():
+            if len(token) >= 3:
+                vocab.add(token)
+    return vocab
+
+
+def fuzzy_correct_token(token: str, vocabulary: set[str]) -> str:
+    if token in vocabulary or len(token) < 4:
+        return token
+    match = get_close_matches(token, vocabulary, n=1, cutoff=0.82)
+    if match:
+        return match[0]
+    return token
+
+
+def tokenize_query(query: str, vocabulary: set[str] | None = None) -> list[str]:
     base_tokens = normalize_for_search(query).split()
     normalized = []
     for token in base_tokens:
         token = normalize_token(token)
+        if vocabulary is not None:
+            token = fuzzy_correct_token(token, vocabulary)
         if token and token not in NOISE_TOKENS:
             normalized.append(token)
     return normalized
@@ -156,8 +177,9 @@ def search_products(
     except DataSourceError as exc:
         return json_response({"found": False, "message": str(exc)})
 
-    # Recherche mot par mot normalisee (accents, pluriels, aliases de marques).
-    terms = tokenize_query(q)
+    vocabulary = extract_search_vocabulary(df)
+    # Recherche mot par mot normalisee (accents, pluriels, aliases et fuzzy matching).
+    terms = tokenize_query(q, vocabulary)
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
         escaped = re.escape(term)
@@ -213,8 +235,9 @@ def get_stock(description: str):
     except DataSourceError as exc:
         return json_response({"found": False, "message": str(exc)})
 
-    # Recherche mot par mot normalisee
-    terms = tokenize_query(description)
+    vocabulary = extract_search_vocabulary(df)
+    # Recherche mot par mot normalisee (accents, pluriels, aliases et fuzzy matching).
+    terms = tokenize_query(description, vocabulary)
     mask = pd.Series([True] * len(df), index=df.index)
     for term in terms:
         escaped = re.escape(term)
